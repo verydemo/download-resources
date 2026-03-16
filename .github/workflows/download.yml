@@ -7,6 +7,14 @@ on:
         description: '单个下载链接（可选，优先级高于 urls.txt）'
         required: false
         default: ''
+      arch:
+        description: '目标架构'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+          - amd64
   repository_dispatch:
     types:
       - webhook-download
@@ -45,14 +53,24 @@ jobs:
         run: |
           echo "${{ github.event.client_payload.url }}" > urls.txt
 
-      - name: Build and push Docker image (multi-arch)
+      - name: Build and push Docker image
         id: build
         run: |
           now=$(date +"%Y%m%d%H%M%S")
           img=registry.cn-hangzhou.aliyuncs.com/jiro-jlzhang/download:${now}
 
-          echo "Building multi-arch image: $img"
-          docker buildx build --platform linux/amd64,linux/arm64 -t $img --push .
+          # 获取架构参数，默认 arm64
+          arch="${{ github.event.inputs.arch }}"
+          [ -z "$arch" ] && arch="arm64"
+
+          # webhook 方式支持 client_payload.arch
+          webhook_arch="${{ github.event.client_payload.arch }}"
+          [ -n "$webhook_arch" ] && arch="$webhook_arch"
+
+          platform="linux/${arch}"
+
+          echo "Building image for $platform: $img"
+          docker buildx build --platform $platform -t $img --push .
 
           echo "image=$img" >> $GITHUB_OUTPUT
           echo "BUILD_FLAG=success" >> $GITHUB_ENV
