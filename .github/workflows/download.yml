@@ -1,0 +1,90 @@
+name: Download Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: '单个下载链接（可选，优先级高于 urls.txt）'
+        required: false
+        default: ''
+  repository_dispatch:
+    types:
+      - webhook-download
+  push:
+    branches: [ main ]
+    paths:
+      - 'urls.txt'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Setup Docker
+        run: |
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/lib/docker
+          echo '{ "exec-opts": ["native.cgroupdriver=cgroupfs"], "cgroup-parent": "/actions_job","data-root": "/mnt/lib/docker"}' | sudo tee /etc/docker/daemon.json > /dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl start docker
+
+      - name: Login to Aliyun Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hangzhou.aliyuncs.com
+          username: ${{ secrets.ALIYUNCS_USERNAME }}
+          password: ${{ secrets.ALIYUNCS_PASSWORD }}
+
+      - name: Process single URL input
+        if: ${{ github.event.inputs.url != '' }}
+        run: |
+          echo "${{ github.event.inputs.url }}" > urls.txt
+
+      - name: Process webhook URL
+        if: ${{ github.event.client_payload.url != '' }}
+        run: |
+          echo "${{ github.event.client_payload.url }}" > urls.txt
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          now=$(date +"%Y%m%d%H%M%S")
+          img=registry.cn-hangzhou.aliyuncs.com/jiro-jlzhang/download:${now}
+
+          echo "Building image: $img"
+          docker build -t $img .
+          docker push $img
+
+          echo "image=$img" >> $GITHUB_OUTPUT
+          echo "BUILD_FLAG=success" >> $GITHUB_ENV
+
+      - name: Send DingTalk notification
+        if: always()
+        env:
+          DD_TOKEN: ${{ secrets.DD_TOKEN }}
+          DD_SIGN: ${{ secrets.DD_SIGN }}
+        run: |
+          if [ -n "$DD_TOKEN" ]; then
+            webhook_url="https://oapi.dingtalk.com/robot/send?access_token=$DD_TOKEN"
+            if [ "$BUILD_FLAG" = "success" ]; then
+              message=$(printf '{"msgtype": "text", "text": {"content": "下载任务完成:\n %s"}}' "${{ steps.build.outputs.image }}")
+            else
+              message='{"msgtype": "text", "text": {"content": "下载任务失败"}}'
+            fi
+            curl -H "Content-Type: application/json" -X POST -d "$message" "$webhook_url"
+          fi
+
+      - name: Send QQ group notification
+        if: always() && github.event.client_payload.group_openid != ''
+        run: |
+          group_openid="${{ github.event.client_payload.group_openid }}"
+          message_id="${{ github.event.client_payload.message_id }}"
+          status=$([ "$BUILD_FLAG" = "success" ] && echo "success" || echo "fail")
+
+          qq_message=$(printf '{"status":"%s","msgtype":"text","group_openid":"%s","message_id":"%s","image":"%s"}' \
+            "$status" "$group_openid" "$message_id" "${{ steps.build.outputs.image }}")
+
+          curl -H "Content-Type: application/json" -X POST -d "$qq_message" \
+            'http://8.138.114.154:18080/dockerimage/message'

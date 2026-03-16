@@ -1,0 +1,5 @@
+# 示例下载链接（每行一个URL）
+# 以 # 开头的行为注释，会被忽略
+
+# 示例文件
+https://github.com/ollama/ollama/releases/download/v0.6.6/OllamaSetup.exe
